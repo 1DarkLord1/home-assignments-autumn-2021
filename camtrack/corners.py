@@ -145,7 +145,7 @@ class CornersTracker:
     def filter_points(self, state, points):
         padding = self.params['common']['borderPadding']
         for i, point in enumerate(points):
-            x, y = np.int0(point[0])
+            x, y = point[0]
             if (
                 x < padding or self.shape[1] - x <= padding
             ) or (
@@ -169,7 +169,7 @@ class CornersTracker:
             **self.params['optFlow']
         )
         state = state.flatten()
-        return np.round(next_points), state
+        return next_points, state
 
     def build_shade_mask(self, points):
         dist = self.params['corners']['minDistance']
@@ -221,7 +221,7 @@ class CornersTracker:
             self.get_corner_sizes(prev_good_points.shape[0])
         )
 
-        shade_mask = self.build_shade_mask(cur_good_points)
+        shade_mask = self.build_shade_mask(np.round(cur_good_points))
         extra_corner_points = self.get_corners(shade_mask)
         state = np.ones(extra_corner_points.shape[0])
         self.filter_points(state, extra_corner_points)
