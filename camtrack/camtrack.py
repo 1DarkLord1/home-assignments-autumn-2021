@@ -14,6 +14,7 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S',
 )
 
+from enum import Enum
 from functools import cmp_to_key
 
 from collections import namedtuple
@@ -73,6 +74,12 @@ FramePnPInformation = namedtuple(
 )
 
 
+class BestFrameState(Enum):
+    success = 'success'
+    not_found = 'not_found'
+    bad_frame_found = 'bad_frame_found'
+
+
 class CameraTracker:
     def __init__(
             self,
@@ -95,6 +102,7 @@ class CameraTracker:
         self._poses = np.empty(self._frames_count, dtype=np.ndarray)
         self._points_3d = {}
         self._handled_frames = np.zeros(self._frames_count, dtype=bool)
+        self._bad_frames = np.zeros(self._frames_count, dtype=bool)
 
     def _calc_new_points_3d(
             self,
@@ -157,7 +165,7 @@ class CameraTracker:
 
         return rodrigues_and_translation_to_view_mat3x4(r_vec, t_vec)
 
-    def _handle_best_frame_for_pnp(self) -> Optional[int]:
+    def _handle_best_frame_for_pnp(self) -> Tuple[BestFrameState, int]:
         """
         Для поиска лучшего кадра для PnP берется метрика (число инлаеров) / (число 3d-2d соответствий),
         число инлаеров определяется с помощью solvePnPRansac
@@ -175,12 +183,16 @@ class CameraTracker:
 
             corresp_count = corresps.ids.shape[0]
 
-            assert corresp_count >= 3
+            if corresp_count < 4:
+                continue
 
-            r_vec_0, t_vec_0, inliers = self._pnp_ransac(
-                corresps.points_1,
-                corresps.points_2,
-            )
+            try:
+                r_vec_0, t_vec_0, inliers = self._pnp_ransac(
+                    corresps.points_1,
+                    corresps.points_2,
+                )
+            except ValueError:
+                continue
 
             inliers = inliers.flatten()
 
@@ -196,25 +208,28 @@ class CameraTracker:
                 best_frame = frame_pnp_information
 
         if best_frame is None:
-            return None
+            return BestFrameState.not_found, -1
 
         i = best_frame.frame
         inliers = best_frame.inliers
         r_vec_0, t_vec_0 = best_frame.r_vec_0, best_frame.t_vec_0
         corresps = best_frame.corresps
 
-        self._poses[i] = self._get_camera_pose(
-            corresps.points_1[inliers],
-            corresps.points_2[inliers],
-            r_vec_0,
-            t_vec_0,
-        )
+        try:
+            self._poses[i] = self._get_camera_pose(
+                corresps.points_1[inliers],
+                corresps.points_2[inliers],
+                r_vec_0,
+                t_vec_0,
+            )
+        except ValueError:
+            return BestFrameState.bad_frame_found, i
 
         logger.info(f'Current best frame: number={i}, inliers count={inliers.shape[0]}')
 
         self._handled_frames[i] = True
 
-        return i
+        return BestFrameState.success, i
 
     def _calc_mean_reprojection_error(self, point_3d, point_id, top_corners) -> float:
         error, total = 0, 0
@@ -248,7 +263,7 @@ class CameraTracker:
         triang_results = []
 
         for frame_2, corners_2 in enumerate(self._corner_storage):
-            if frame_1 == frame_2 or not self._handled_frames[frame_2]:
+            if frame_1 == frame_2 or not self._handled_frames[frame_2] or self._bad_frames[frame_2]:
                 continue
 
             new_points_3d, corresp_ids, median_cos = \
@@ -303,7 +318,7 @@ class CameraTracker:
         best_cos, best_points_3d, best_ids = None, None, None
 
         for frame_2, corners_2 in enumerate(self._corner_storage):
-            if frame_1 == frame_2 or not self._handled_frames[frame_2]:
+            if frame_1 == frame_2 or not self._handled_frames[frame_2] or self._bad_frames[frame_2]:
                 continue
 
             new_points_3d, corresp_ids, median_cos = \
@@ -350,12 +365,20 @@ class CameraTracker:
         while True:
             logger.info(f'Point cloud size: {len(self._points_3d)}')
 
-            best_frame = self._handle_best_frame_for_pnp()
+            state, best_frame = self._handle_best_frame_for_pnp()
 
-            if best_frame is None:
+            if state is BestFrameState.not_found:
+                break
+
+            if state is BestFrameState.bad_frame_found:
+                self._bad_frames[best_frame] = True
+                self._handled_frames[best_frame] = True
                 break
 
             self._enrich_point_cloud_stupid(best_frame, self._corner_storage[best_frame])
+
+        self._poses[self._handled_frames ^ True] = None
+        self._poses[self._bad_frames] = None
 
         ids = np.array(list(self._points_3d.keys()))
         points = np.array(list(self._points_3d.values()))
