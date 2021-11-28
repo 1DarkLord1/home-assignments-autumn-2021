@@ -24,7 +24,7 @@ from collections import namedtuple
 from typing import List, Tuple
 
 import click
-import cv2
+import cv2.cv2 as cv2
 import numpy as np
 import pims
 from sklearn.preprocessing import normalize
@@ -471,6 +471,7 @@ def create_cli(track_and_calc_colors):
                 bgra = draw_residuals(grayscale, corner_storage[frame],
                                       point_cloud, camera_parameters,
                                       poses[frame])
+
                 cv2.imshow('Frame', bgra)
                 key = chr(cv2.waitKey(20) & 0xFF)
                 if key == 'r':
